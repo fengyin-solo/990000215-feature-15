@@ -4,13 +4,106 @@ const { authenticateToken } = require('../middleware/auth');
 
 const router = express.Router();
 
+// Maximum accepted length for the ?search= query term
+const MAX_SEARCH_LENGTH = 100;
+
+// The list endpoint always responds with the same envelope:
+// { articles, pagination, meta } (plus an `error` message on rejected
+// queries). `meta.status` / `meta.reason` distinguish the conditions:
+//   ok / null               - articles returned
+//   empty / no_results      - query matched nothing
+//   error / page_out_of_range (400) - non-numeric, non-positive or too-large page
+//   error / search_too_long (400)   - search term over MAX_SEARCH_LENGTH
+function listErrorBody({ reason, message, page, limit, total = 0, totalPages = 0, filters }) {
+  return {
+    error: message,
+    articles: [],
+    pagination: { total, page, limit, totalPages },
+    meta: {
+      status: 'error',
+      reason,
+      availableTags: [],
+      summary: {
+        total,
+        returned: 0,
+        page,
+        totalPages,
+        from: 0,
+        to: 0,
+        filters,
+        text: message
+      },
+      nextPage: { hasNextPage: false, page: null }
+    }
+  };
+}
+
+function listMeta({ total, returned, page, totalPages, offset, filters, availableTags }) {
+  const from = returned > 0 ? offset + 1 : 0;
+  const to = returned > 0 ? offset + returned : 0;
+  const hasNextPage = page < totalPages;
+
+  return {
+    status: returned > 0 ? 'ok' : 'empty',
+    reason: returned > 0 ? null : 'no_results',
+    availableTags,
+    summary: {
+      total,
+      returned,
+      page,
+      totalPages,
+      from,
+      to,
+      filters,
+      text: returned > 0
+        ? `Showing ${from}-${to} of ${total} articles`
+        : 'No matching articles'
+    },
+    nextPage: {
+      hasNextPage,
+      page: hasNextPage ? page + 1 : null
+    }
+  };
+}
+
 // GET /api/articles - List articles with pagination, tag filter and search
 router.get('/', (req, res) => {
   const db = getDb();
-  const page = parseInt(req.query.page) || 1;
-  const limit = parseInt(req.query.limit) || 10;
   const tag = req.query.tag || null;
   const search = req.query.search || null;
+  const filters = { tag, search };
+
+  // limit stays lenient: fall back to the default when not a positive integer
+  let limit = parseInt(req.query.limit, 10);
+  if (!Number.isInteger(limit) || limit < 1) limit = 10;
+
+  // Reject over-long search terms before touching the database
+  if (search && search.length > MAX_SEARCH_LENGTH) {
+    return res.status(400).json(listErrorBody({
+      reason: 'search_too_long',
+      message: `Search term exceeds the maximum length of ${MAX_SEARCH_LENGTH} characters`,
+      page: 1,
+      limit,
+      filters
+    }));
+  }
+
+  // page must be a positive integer when provided
+  let page = 1;
+  if (req.query.page !== undefined) {
+    const rawPage = String(req.query.page).trim();
+    if (!/^\d+$/.test(rawPage) || parseInt(rawPage, 10) < 1) {
+      return res.status(400).json(listErrorBody({
+        reason: 'page_out_of_range',
+        message: `Invalid page number: ${req.query.page}`,
+        page: 1,
+        limit,
+        filters
+      }));
+    }
+    page = parseInt(rawPage, 10);
+  }
+
   const offset = (page - 1) * limit;
 
   let countQuery, articlesQuery;
@@ -39,6 +132,21 @@ router.get('/', (req, res) => {
 
   try {
     const { total } = db.prepare(countQuery).get(...countParams);
+    const totalPages = Math.ceil(total / limit);
+
+    // Page beyond the available range (page 1 stays valid for empty results)
+    if (page > Math.max(totalPages, 1)) {
+      return res.status(400).json(listErrorBody({
+        reason: 'page_out_of_range',
+        message: `Page ${page} is out of range (total pages: ${totalPages})`,
+        page,
+        limit,
+        total,
+        totalPages,
+        filters
+      }));
+    }
+
     const articles = db.prepare(articlesQuery).all(...params);
 
     const parsedArticles = articles.map(article => ({
@@ -46,14 +154,37 @@ router.get('/', (req, res) => {
       tags: article.tags ? article.tags.split(',').map(t => t.trim()) : []
     }));
 
+    // Tags available within the current filtered result set, derived from
+    // the same query so the metadata always matches the returned content
+    const tagRows = db.prepare(`SELECT tags FROM articles ${whereSql}`).all(...countParams);
+    const tagSet = new Set();
+    tagRows.forEach(row => {
+      if (row.tags) {
+        row.tags.split(',').forEach(t => {
+          const trimmed = t.trim();
+          if (trimmed) tagSet.add(trimmed);
+        });
+      }
+    });
+    const availableTags = Array.from(tagSet).sort();
+
     res.json({
       articles: parsedArticles,
       pagination: {
         total,
         page,
         limit,
-        totalPages: Math.ceil(total / limit)
-      }
+        totalPages
+      },
+      meta: listMeta({
+        total,
+        returned: parsedArticles.length,
+        page,
+        totalPages,
+        offset,
+        filters,
+        availableTags
+      })
     });
   } catch (err) {
     console.error(err);
@@ -173,7 +304,7 @@ function getTags(req, res) {
   const db = getDb();
 
   try {
-    const articles = db.prepare('SELECT tags FROM articles WHERE tags IS NOT NULL AND tags != ""').all();
+    const articles = db.prepare("SELECT tags FROM articles WHERE tags IS NOT NULL AND tags != ''").all();
     const tagSet = new Set();
 
     articles.forEach(article => {

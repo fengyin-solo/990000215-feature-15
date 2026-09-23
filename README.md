@@ -112,12 +112,56 @@ The frontend will be available at `http://localhost:5173`
 | Method | Endpoint | Description | Auth Required |
 |--------|----------|-------------|---------------|
 | POST | `/api/auth/login` | Admin login | No |
-| GET | `/api/articles` | List articles (with pagination and tag filter) | No |
+| GET | `/api/articles` | List articles (with pagination, tag filter and search) | No |
 | GET | `/api/articles/:id` | Get single article | No |
 | POST | `/api/articles` | Create new article | Yes |
 | PUT | `/api/articles/:id` | Update article | Yes |
 | DELETE | `/api/articles/:id` | Delete article | Yes |
 | GET | `/api/tags` | Get all unique tags | No |
+
+### Article list response
+
+`GET /api/articles` accepts `page`, `limit`, `tag` and `search` query
+parameters and always responds with the same envelope:
+
+```json
+{
+  "articles": [ ... ],
+  "pagination": { "total": 15, "page": 1, "limit": 10, "totalPages": 2 },
+  "meta": {
+    "status": "ok",
+    "reason": null,
+    "availableTags": ["CSS", "前端", "..."],
+    "summary": {
+      "total": 15,
+      "returned": 10,
+      "page": 1,
+      "totalPages": 2,
+      "from": 1,
+      "to": 10,
+      "filters": { "tag": null, "search": null },
+      "text": "Showing 1-10 of 15 articles"
+    },
+    "nextPage": { "hasNextPage": true, "page": 2 }
+  }
+}
+```
+
+- `meta.availableTags` — unique tags of the articles matching the current
+  filters (computed from the same query, so it always reflects the latest
+  content; identical to `GET /api/tags` when no filter is applied).
+- `meta.summary` — counts, item range and active filters for the current page.
+- `meta.nextPage` — whether another page exists and which page to request.
+
+`meta.status` / `meta.reason` distinguish the result conditions, and rejected
+queries keep the same envelope (plus an `error` message):
+
+| Condition | HTTP | `meta.status` | `meta.reason` |
+|-----------|------|---------------|----------------|
+| Articles returned | 200 | `ok` | `null` |
+| No matching articles | 200 | `empty` | `no_results` |
+| Page invalid (non-numeric/`< 1`) or beyond the last page | 400 | `error` | `page_out_of_range` |
+| Search term longer than 100 characters | 400 | `error` | `search_too_long` |
 
 ## Admin Credentials
 
