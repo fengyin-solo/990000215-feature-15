@@ -8,7 +8,19 @@
             搜索: {{ searchQuery }}
           </el-tag>
         </h2>
-        
+
+        <div v-if="meta.currentSummary" class="result-meta">
+          <span class="summary-text">{{ meta.currentSummary.text }}</span>
+          <el-button
+            v-if="meta.nextPage && meta.nextPage.hasNext"
+            size="small"
+            class="next-page-hint"
+            @click="goToNextPage"
+          >
+            下一页（第 {{ meta.nextPage.page }} 页，剩余 {{ meta.nextPage.remaining }} 篇）
+          </el-button>
+        </div>
+
         <div v-loading="loading">
           <ArticleCard
             v-for="article in articles"
@@ -43,6 +55,7 @@
 <script setup>
 import { ref, computed, onMounted, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
+import { ElMessage } from 'element-plus'
 import api from '../api'
 import ArticleCard from '../components/ArticleCard.vue'
 import TagFilter from '../components/TagFilter.vue'
@@ -62,6 +75,11 @@ const pagination = ref({
   page: 1,
   limit: 10,
   totalPages: 0
+})
+const meta = ref({
+  availableTags: [],
+  currentSummary: null,
+  nextPage: { hasNext: false }
 })
 
 const pageTitle = computed(() => {
@@ -113,12 +131,38 @@ async function fetchArticles() {
     if (searchQuery.value) {
       params.search = searchQuery.value
     }
-    
+
     const response = await api.get('/articles', { params })
     articles.value = response.data.articles
     pagination.value = response.data.pagination
+    meta.value = response.data.meta || meta.value
+
+    // Available tags are scoped to the current result set; refresh the filter
+    // from metadata so tags stay in sync with the articles being shown.
+    if (response.data.meta && Array.isArray(response.data.meta.availableTags)) {
+      tags.value = response.data.meta.availableTags
+    }
   } catch (error) {
-    console.error('Failed to fetch articles:', error)
+    const data = error.response?.data
+    const code = data?.code
+    const message = data?.details?.message || data?.error || '获取文章失败'
+
+    if (code === 'PAGE_OUT_OF_RANGE') {
+      // A stale page (e.g. URL loaded after a refresh): fall back to page 1.
+      currentPage.value = 1
+      ElMessage.warning(message)
+      return fetchArticles()
+    }
+
+    // Distinct messaging for the remaining unified error conditions.
+    ElMessage.error(message)
+    articles.value = []
+    pagination.value = { total: 0, page: 1, limit: pagination.value.limit, totalPages: 0 }
+    meta.value = {
+      availableTags: [],
+      currentSummary: { text: message },
+      nextPage: { hasNext: false }
+    }
   } finally {
     loading.value = false
   }
@@ -127,9 +171,18 @@ async function fetchArticles() {
 async function fetchTags() {
   try {
     const response = await api.get('/tags')
-    tags.value = response.data.tags
+    // Keep the global tag list only until the first scoped result metadata arrives.
+    if (!meta.value.currentSummary) {
+      tags.value = response.data.tags
+    }
   } catch (error) {
     console.error('Failed to fetch tags:', error)
+  }
+}
+
+function goToNextPage() {
+  if (meta.value.nextPage?.hasNext) {
+    handlePageChange(meta.value.nextPage.page)
   }
 }
 
@@ -174,5 +227,25 @@ function clearSearch() {
 .search-tag {
   font-size: 14px;
   font-weight: normal;
+}
+
+.result-meta {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  margin-bottom: 16px;
+  padding: 8px 12px;
+  background-color: #f5f7fa;
+  border-radius: 4px;
+}
+
+.summary-text {
+  color: #606266;
+  font-size: 14px;
+}
+
+.next-page-hint {
+  flex-shrink: 0;
 }
 </style>

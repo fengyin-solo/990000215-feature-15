@@ -119,6 +119,50 @@ The frontend will be available at `http://localhost:5173`
 | DELETE | `/api/articles/:id` | Delete article | Yes |
 | GET | `/api/tags` | Get all unique tags | No |
 
+### List endpoint response
+
+`GET /api/articles` supports `page` (default 1), `limit` (default 10, max 100),
+`tag` and `search` (max 100 characters). The response keeps `articles` and
+`pagination` and adds a `meta` block describing the current result set:
+
+```json
+{
+  "articles": [ /* { id, title, summary, tags: string[], created_at, updated_at } */ ],
+  "pagination": { "total": 15, "page": 1, "limit": 10, "totalPages": 2 },
+  "meta": {
+    "availableTags": ["JavaScript", "Vue", "前端"],
+    "currentSummary": {
+      "text": "共 15 篇文章，当前第 1/2 页，本页显示 10 篇",
+      "total": 15,
+      "totalPages": 2,
+      "page": 1,
+      "limit": 10,
+      "shown": 10,
+      "filters": { "tag": null, "search": null }
+    },
+    "nextPage": { "hasNext": true, "page": 2, "limit": 10, "remaining": 5 }
+  }
+}
+```
+
+- `availableTags`: tags that occur in the articles matching the current
+  filters (across all pages), so metadata always matches the listed content.
+- `currentSummary`: a human-readable summary plus structured counts.
+- `nextPage`: next-page hint; `hasNext` is `false` (and `page` is `null`) on
+  the last page. An empty match still returns HTTP 200 with empty `articles`.
+
+Validation / range failures use a unified error envelope
+`{ error, code, details }` with a distinct `code` per condition:
+
+| Condition | HTTP | code |
+|-----------|------|------|
+| `page` is not a positive integer | 400 | `INVALID_PAGE` |
+| `limit` is not a positive integer | 400 | `INVALID_LIMIT` |
+| `limit` > 100 | 400 | `LIMIT_OUT_OF_RANGE` |
+| `search` is empty / whitespace-only | 400 | `INVALID_SEARCH` |
+| `search` longer than 100 characters | 400 | `SEARCH_TOO_LONG` |
+| `page` beyond the available pages | 400 | `PAGE_OUT_OF_RANGE` |
+
 ## Admin Credentials
 
 - **Username**: admin
